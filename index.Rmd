@@ -1,0 +1,213 @@
+---
+title: "Training a Prediction Model on the Weight Lifting Exercise Dataset"
+author: "Nguyen Nguyen"
+date: "8/4/2019"
+output: html_document
+---
+
+## Executive Summary
+
+## Data Preprocessing
+
+We first load data into R.
+
+``` {r}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+The training data set has `r nrow(training)` observations and `r ncol(training)` 
+variables. This is a fairly large number of predictors, so we would try to reduce 
+the number of predictors by applying the Principal Component Analysis (PCA). But 
+before doing that, we have to clean the data.
+
+
+Our outcome is the "classe" variable, which is the last column (#160) in the training data set. It measures how well an object performs the exercises. Here is the break-dowm
+of the outcome "classe" in the training data set.
+
+``` {r}
+table(training$classe)
+```
+
+After taking an initial look at the training data, we found that there are a lot 
+of columns with NA values and missing values. If this is the case, the number of 
+NA's or missing values in each column is 19216 or 19216/19622 = 98%. It means 
+these columns provide very little information and can be removed from the training 
+data set. 
+
+Having said that, let's starting with cleaning NA's values. Note that all of these cleaning steps should be applied to both training and testing data set.
+
+``` {r}
+## Compute the number of NAs in each column
+naCompute <- sapply(training[,-160], function(x) sum(is.na(x)))
+## Get names of the columns with no NAs
+naSelect <- naCompute[naCompute == 0]
+naNames <- names(naSelect)
+## Subset the columns with no NAs
+trainNA <- subset(training[,-160], select = naNames)
+testNA <- subset(testing[,-160], select = naNames)
+```
+Then, we remove all columns with a large proportion of missing values.
+
+``` {r na}
+## Compute the number of missing values in each column
+missCompute <- sapply(trainNA, function(x) sum(x == ""))
+## Get names of the columns with no missing values
+missSelect <- missCompute[missCompute == 0]
+missNames <- names(missSelect)
+## Subset the columns with no missing values
+trainMiss <- subset(trainNA, select = missNames)
+testMiss <- subset(testNA, select = missNames)
+```
+
+The first several columns of the training data set contain only index 
+information, except for the "user_name" variable, and should be removed.
+
+``` {r miss}
+trainClean <- trainMiss[,-c(1:7)]
+testClean <- testMiss[,-c(1:7)]
+```
+
+After all of these cleaning steps, our training data set has `r ncol(trainClean)`
+variables and is ready to be applied with PCA. The PCA technique would help to 
+remove the highly correlated variables while retain much of the information.
+
+```{r PCA, warning = FALSE, message = FALSE}
+# calculate the pre-process parameters from the dataset
+library(caret)
+preProcess <- preProcess(trainClean, method = c("center", "scale", "pca"))
+# transform the dataset using the parameters
+trainPC <- predict(preProcess, trainClean)
+testPC <- predict(preProcess, testClean)
+```
+
+With the PCA technique, we are able to reduce the number of predictors from 52 
+to 25. Finally, we put the user_name variable and the outcome to the clean 
+training and testing data sets.
+
+``` {r}
+trainFinal <- cbind(user_name = training$user_name, trainPC, 
+                    classe = training$classe)
+testFinal <- cbind(user_name = testing$user_name, testPC)
+```
+
+
+## Train with different models
+
+Because we have a huge amount of data, it would take a long time to train our
+models. Therefore, we use parralel processing to improve the performance of 
+the caret package.
+
+Below is the code to configure parralel processing.
+
+``` {r, message = FALSE, warning = FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+Then, we configure the trainControl object to allow for parralel processing 
+and cross validation with the k-fold method (k = 5).
+
+
+``` {r}
+train.control <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+``` 
+We would train with 3 different models: Linear Discriminant Analysis (LDA), 
+Random Forest, and Boosting with trees. We will choose the model with the 
+highest accuracy.
+
+### Train with Linear Discriminant Analysis model
+
+``` {r lda, cache = TRUE}
+set.seed(123) 
+ldaFit <- train(classe ~., data = trainFinal, method = "lda", 
+                trControl = train.control)
+ldaPred <- predict(ldaFit, trainFinal)
+```
+
+Let's see how this model performs in-sample.
+
+``` {r}
+table(ldaPred, trainFinal$classe)
+```
+
+There are a lot of off-diagonal elements in this table, so the LDA model 
+does not perform very well. The in-sample accuracy for this model is:
+
+``` {r}
+confusionMatrix(trainFinal$classe, ldaPred)$overall[1]
+```
+
+### Train with Random Forest
+
+``` {r rf, cache = TRUE}
+set.seed(123) 
+rfFit <- train(classe ~., data = trainFinal, method = "rf",
+                trControl = train.control)
+rfPred <- predict(rfFit, trainFinal)
+```
+
+The in-sample prediction matrix of the random forest is:
+
+``` {r}
+table(rfPred, trainFinal$classe)
+```
+
+As you can see, the Random Forest model does an amazing job in predicting the 
+outcome in the training set with zero errors. And we can confirm this with the 
+in-sample accuracy of this model:
+
+```{r}
+confusionMatrix(trainFinal$classe, rfPred)$overall[1]
+```
+
+
+### Train with Boosting with trees
+
+``` {r gbm, cache = TRUE}
+set.seed(123) 
+gbmFit <- train(classe ~., data = trainFinal, method = "gbm", verbose = FALSE,
+                trControl = train.control)
+gbmPred <- predict(gbmFit, trainFinal)
+```
+
+Let's again look at the prediction table.
+
+``` {r}
+table(gbmPred, trainFinal$classe)
+```
+
+Like the LDA model, we still see a lot of off-diagonal elements in the 
+prediction matrix, which implies that the model is not trained well. 
+The in-sample accuracy of this model is:
+
+``` {r}
+confusionMatrix(trainFinal$classe, gbmPred)$overall[1]
+```
+
+
+After done with the training step, we should de-register parallel processing 
+cluster.
+
+``` {r}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+The Random Forest model gives us the best accuracy, so we will use this model 
+to predict the testing data.
+
+## Prediction with the testing data set
+
+As we mentioned before, we will use the Random Forest model to predict with 
+the testing data set. The in-sample error of this model is zero, i.e., a 
+perfect prediction, so we expect the model will give a high accuracy for 
+the out-of-sample prediction.
+
+``` {r}
+predict(rfFit, testFinal)
+```
+
+
