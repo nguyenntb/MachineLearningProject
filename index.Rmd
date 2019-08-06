@@ -7,6 +7,10 @@ output: html_document
 
 ## Executive Summary
 
+After cleaning the data and applying the PCA technique, we train our model
+with 3 methods: LDA, Random Forest, and Boosting with Trees. The Random 
+Forest is proved to be the best model with 100% accuracy in-sample.
+
 ## Data Preprocessing
 
 We first load data into R.
