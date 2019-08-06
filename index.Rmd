@@ -9,7 +9,8 @@ output: html_document
 
 After cleaning the data and applying the PCA technique, we train our model
 with 3 methods: LDA, Random Forest, and Boosting with Trees. The Random 
-Forest is proved to be the best model with 100% accuracy in-sample.
+Forest is proved to be the best model with 100% accuracy in-sample and 98%
+accuracy out-of-sample.
 
 ## Data Preprocessing
 
@@ -18,6 +19,17 @@ We first load data into R.
 ``` {r}
 training <- read.csv("pml-training.csv")
 testing <- read.csv("pml-testing.csv")
+```
+
+For the cross-validation purpose, we split the original training data set 
+into new training and testing data sets.
+
+``` {r, message = FALSE, warning = FALSE}
+library(caret)
+set.seed(456)
+inTrain <- createDataPartition(training$classe, p = 0.7, list = F)
+train <- training[inTrain, ]
+test <- training[-inTrain, ]
 ```
 
 The training data set has `r nrow(training)` observations and `r ncol(training)` 
@@ -30,12 +42,11 @@ Our outcome is the "classe" variable, which is the last column (#160) in the tra
 of the outcome "classe" in the training data set.
 
 ``` {r}
-table(training$classe)
+table(train$classe)
 ```
 
 After taking an initial look at the training data, we found that there are a lot 
-of columns with NA values and missing values. If this is the case, the number of 
-NA's or missing values in each column is 19216 or 19216/19622 = 98%. It means 
+of columns with NA values and missing values. It means that
 these columns provide very little information and can be removed from the training 
 data set. 
 
@@ -43,13 +54,14 @@ Having said that, let's starting with cleaning NA's values. Note that all of the
 
 ``` {r}
 ## Compute the number of NAs in each column
-naCompute <- sapply(training[,-160], function(x) sum(is.na(x)))
+naCompute <- sapply(train[,-160], function(x) sum(is.na(x)))
 ## Get names of the columns with no NAs
 naSelect <- naCompute[naCompute == 0]
 naNames <- names(naSelect)
 ## Subset the columns with no NAs
-trainNA <- subset(training[,-160], select = naNames)
-testNA <- subset(testing[,-160], select = naNames)
+trainNA <- subset(train[,-160], select = naNames)
+testNA <- subset(test[,-160], select = naNames)
+testingNA <- subset(testing[,-160], select = naNames)
 ```
 Then, we remove all columns with a large proportion of missing values.
 
@@ -62,6 +74,7 @@ missNames <- names(missSelect)
 ## Subset the columns with no missing values
 trainMiss <- subset(trainNA, select = missNames)
 testMiss <- subset(testNA, select = missNames)
+testingMiss <- subset(testingNA, select = missNames)
 ```
 
 The first several columns of the training data set contain only index 
@@ -70,6 +83,7 @@ information, except for the "user_name" variable, and should be removed.
 ``` {r miss}
 trainClean <- trainMiss[,-c(1:7)]
 testClean <- testMiss[,-c(1:7)]
+testingClean <- testingMiss[,-c(1:7)]
 ```
 
 After all of these cleaning steps, our training data set has `r ncol(trainClean)`
@@ -78,11 +92,11 @@ remove the highly correlated variables while retain much of the information.
 
 ```{r PCA, warning = FALSE, message = FALSE}
 # calculate the pre-process parameters from the dataset
-library(caret)
 preProcess <- preProcess(trainClean, method = c("center", "scale", "pca"))
 # transform the dataset using the parameters
 trainPC <- predict(preProcess, trainClean)
 testPC <- predict(preProcess, testClean)
+testingPC <- predict(preProcess, testingClean)
 ```
 
 With the PCA technique, we are able to reduce the number of predictors from 52 
@@ -90,11 +104,10 @@ to 25. Finally, we put the user_name variable and the outcome to the clean
 training and testing data sets.
 
 ``` {r}
-trainFinal <- cbind(user_name = training$user_name, trainPC, 
-                    classe = training$classe)
-testFinal <- cbind(user_name = testing$user_name, testPC)
+trainFinal <- cbind(user_name = train$user_name, trainPC, classe = train$classe)
+testFinal <- cbind(user_name = test$user_name, testPC, classe = test$classe)
+testingFinal <- cbind(user_name = testing$user_name, testingPC)
 ```
-
 
 ## Train with different models
 
@@ -128,21 +141,29 @@ highest accuracy.
 set.seed(123) 
 ldaFit <- train(classe ~., data = trainFinal, method = "lda", 
                 trControl = train.control)
-ldaPred <- predict(ldaFit, trainFinal)
+ldaPredIn <- predict(ldaFit, trainFinal)
+ldaPredOut <- predict(ldaFit, testFinal)
 ```
 
-Let's see how this model performs in-sample.
+Let's see how this model performs in-sample,
 
 ``` {r}
-table(ldaPred, trainFinal$classe)
+table(ldaPredIn, trainFinal$classe)
 ```
-
-There are a lot of off-diagonal elements in this table, so the LDA model 
-does not perform very well. The in-sample accuracy for this model is:
+and out-of-sample,
 
 ``` {r}
-confusionMatrix(trainFinal$classe, ldaPred)$overall[1]
+table(ldaPredOut, testFinal$classe)
 ```
+There are a lot of off-diagonal elements in these tables, so the LDA model 
+does not perform very well. The accuracy for this model is:
+
+``` {r}
+ldaAccuIn <- confusionMatrix(trainFinal$classe, ldaPredIn)$overall[1]
+ldaAccuOut <- confusionMatrix(testFinal$classe, ldaPredOut)$overall[1]
+cbind("In-Sample" = ldaAccuIn, "Out-of-Sample" = ldaAccuOut)
+```
+
 
 ### Train with Random Forest
 
@@ -150,21 +171,30 @@ confusionMatrix(trainFinal$classe, ldaPred)$overall[1]
 set.seed(123) 
 rfFit <- train(classe ~., data = trainFinal, method = "rf",
                 trControl = train.control)
-rfPred <- predict(rfFit, trainFinal)
+rfPredIn <- predict(rfFit, trainFinal)
+rfPredOut <- predict(rfFit, testFinal)
 ```
 
 The in-sample prediction matrix of the random forest is:
 
 ``` {r}
-table(rfPred, trainFinal$classe)
+table(rfPredIn, trainFinal$classe)
+```
+
+The out-of-sample prediction matrix of the random forest is:
+
+``` {r}
+table(rfPredOut, testFinal$classe)
 ```
 
 As you can see, the Random Forest model does an amazing job in predicting the 
-outcome in the training set with zero errors. And we can confirm this with the 
-in-sample accuracy of this model:
+outcome in the training set with zero errors in-sample and very little off-diagnonal
+elements. And we can confirm this with the accuracy of this model:
 
 ```{r}
-confusionMatrix(trainFinal$classe, rfPred)$overall[1]
+rfAccuIn <- confusionMatrix(trainFinal$classe, rfPredIn)$overall[1]
+rfAccuOut <- confusionMatrix(testFinal$classe, rfPredOut)$overall[1]
+cbind("In-Sample" = rfAccuIn, "Out-of-Sample" = rfAccuOut)
 ```
 
 
@@ -174,21 +204,30 @@ confusionMatrix(trainFinal$classe, rfPred)$overall[1]
 set.seed(123) 
 gbmFit <- train(classe ~., data = trainFinal, method = "gbm", verbose = FALSE,
                 trControl = train.control)
-gbmPred <- predict(gbmFit, trainFinal)
+gbmPredIn <- predict(gbmFit, trainFinal)
+gbmPredOut <- predict(gbmFit, testFinal)
 ```
 
-Let's again look at the prediction table.
+Let's again look at the in-sample prediction table,
 
 ``` {r}
-table(gbmPred, trainFinal$classe)
+table(gbmPredIn, trainFinal$classe)
+```
+
+and the out-of-sample prediction table,
+
+``` {r}
+table(gbmPredOut, testFinal$classe)
 ```
 
 Like the LDA model, we still see a lot of off-diagonal elements in the 
 prediction matrix, which implies that the model is not trained well. 
-The in-sample accuracy of this model is:
+The in-sample and out-of-sample accuracy of this model is:
 
 ``` {r}
-confusionMatrix(trainFinal$classe, gbmPred)$overall[1]
+gbmAccuIn <- confusionMatrix(trainFinal$classe, gbmPredIn)$overall[1]
+gbmAccuOut <- confusionMatrix(testFinal$classe, gbmPredOut)$overall[1]
+cbind("In-Sample" = gbmAccuIn, "Out-of-Sample" = gbmAccuOut)
 ```
 
 
@@ -210,8 +249,8 @@ the testing data set. The in-sample error of this model is zero, i.e., a
 perfect prediction, so we expect the model will give a high accuracy for 
 the out-of-sample prediction.
 
-``` {r}
-predict(rfFit, testFinal)
+``` {r, results = "hide"}
+predict(rfFit, testingFinal)
 ```
 
 
